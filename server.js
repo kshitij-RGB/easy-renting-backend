@@ -156,11 +156,43 @@ app.get('/api/bookings/my', protect, async (req, res) => {
 });
 
 // CALENDAR ROUTE: Fetches dates to block on the frontend
+// CALENDAR ROUTE: Only fetches dates that are COMPLETELY out of stock
 app.get('/api/bookings/item/:itemId/dates', async (req, res) => {
   try {
     const { itemId } = req.params;
-    const bookings = await Booking.find({ item: itemId }).select('startDate endDate');
-    res.json({ success: true, bookings: bookings });
+    
+    // 1. Get the item so we know its max quantity
+    const item = await Item.findById(itemId);
+    if (!item) return res.status(404).json({ success: false, message: "Item not found" });
+
+    // 2. Get all confirmed bookings for this item
+    const bookings = await Booking.find({ item: itemId, status: 'Confirmed' });
+
+    // 3. Create a dictionary to count how many times each specific date is booked
+    const dateCounts = {};
+    
+    bookings.forEach(booking => {
+      let curr = new Date(booking.startDate);
+      const end = new Date(booking.endDate);
+      
+      // Loop through every single day of this booking
+      while (curr <= end) {
+        const dateStr = curr.toISOString().split('T')[0]; // Looks like '2026-04-18'
+        dateCounts[dateStr] = (dateCounts[dateStr] || 0) + 1; // Add 1 to the count for this day
+        curr.setDate(curr.getDate() + 1); // Move to next day
+      }
+    });
+
+    // 4. Figure out which dates have hit the maximum quantity limit
+    const fullyBookedDates = [];
+    for (const [dateStr, count] of Object.entries(dateCounts)) {
+      if (count >= item.quantity) {
+        fullyBookedDates.push(dateStr); // Only block it if ALL stock is gone
+      }
+    }
+
+    // Send only the fully booked dates to the frontend
+    res.json({ success: true, fullyBookedDates: fullyBookedDates });
   } catch (error) {
     console.error("Error fetching dates:", error);
     res.status(500).json({ success: false, message: "Could not fetch booked dates" });
