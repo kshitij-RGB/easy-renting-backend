@@ -7,6 +7,7 @@ const itemSchema = new mongoose.Schema({
   quantity: { type: Number, default: 1 },
   category: { type: String, default: 'Other' }, // NEW: Category Field
   imageUrls: [{ type: String }], 
+  city: { type: String, default: 'Indore' }, // NEW: City Field
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true }); // NEW: Enables sorting by newest
 
