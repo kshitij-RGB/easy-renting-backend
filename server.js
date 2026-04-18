@@ -33,7 +33,6 @@ const storage = new CloudinaryStorage({
 const upload = multer({ storage: storage });
 
 // --- RAZORPAY CONFIG ---
-// ⚠️ Replace these with your actual keys from the Razorpay Dashboard
 const razorpayInstance = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_SeWuMDlMo3ENSg',
   key_secret: process.env.RAZORPAY_KEY_SECRET || 'kjY2LgvU4jBogJfhmfJFZ0ok'
@@ -49,7 +48,9 @@ const protect = (req, res, next) => {
   } catch (error) { res.status(401).json({ message: "Session expired" }); }
 };
 
-// --- AUTH ---
+// ==========================================
+// --- 1. AUTH ROUTES ---
+// ==========================================
 app.post('/api/auth/register', async (req, res) => {
   try {
     const hashedPassword = await bcrypt.hash(req.body.password, 10);
@@ -67,7 +68,9 @@ app.post('/api/auth/login', async (req, res) => {
   } else { res.status(401).json({ message: 'Invalid credentials' }); }
 });
 
-// --- ITEMS ---
+// ==========================================
+// --- 2. ITEM ROUTES ---
+// ==========================================
 app.get('/api/items', async (req, res) => {
   const items = await Item.find().populate('user', 'email');
   const itemsWithStock = await Promise.all(items.map(async (item) => {
@@ -115,13 +118,15 @@ app.delete('/api/items/:id', protect, async (req, res) => {
   if (item && item.user.toString() === req.user) { await item.deleteOne(); res.json({ message: "Deleted" }); }
 });
 
-// --- PAYMENTS & BOOKINGS ---
+// ==========================================
+// --- 3. BOOKING & PAYMENT ROUTES ---
+// ==========================================
 app.post('/api/payments/create-order', protect, async (req, res) => {
   try {
     const { amount } = req.body; 
     const options = {
-      amount: Math.round(amount * 100), // Rounds to prevent decimal crashing
-      currency: "INR", // REQUIRED BY RAZORPAY TEST ACCOUNTS
+      amount: Math.round(amount * 100), 
+      currency: "INR", 
       receipt: `receipt_${Date.now()}`
     };
     const order = await razorpayInstance.orders.create(options);
@@ -132,27 +137,41 @@ app.post('/api/payments/create-order', protect, async (req, res) => {
   }
 });
 
-
-// Add this below the other booking routes
 app.get('/api/bookings/owner', protect, async (req, res) => {
   try {
-    // Fetch all bookings where this user is the seller
     const bookings = await Booking.find({ seller: req.user })
       .populate('item', 'title imageUrls pricePerDay')
-      .populate('buyer', 'email _id') // Gets the customer's email
-      .sort({ createdAt: -1 }); // Shows newest orders first
+      .populate('buyer', 'email _id') 
+      .sort({ createdAt: -1 }); 
     res.json(bookings);
   } catch (err) { 
+    console.error("Owner Dashboard Error:", err);
     res.status(500).json({ message: "Failed to fetch owner dashboard data" }); 
+  }
+});
+
+app.get('/api/bookings/my', protect, async (req, res) => {
+  const bookings = await Booking.find({ buyer: req.user }).populate('item');
+  res.json(bookings);
+});
+
+// CALENDAR ROUTE: Fetches dates to block on the frontend
+app.get('/api/bookings/item/:itemId/dates', async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const bookings = await Booking.find({ item: itemId }).select('startDate endDate');
+    res.json({ success: true, bookings: bookings });
+  } catch (error) {
+    console.error("Error fetching dates:", error);
+    res.status(500).json({ success: false, message: "Could not fetch booked dates" });
   }
 });
 
 app.post('/api/bookings', protect, async (req, res) => {
   try {
-    // We don't even need sellerId from the frontend anymore
     const { itemId, totalPrice, startDate, endDate, razorpayPaymentId, razorpayOrderId, razorpaySignature } = req.body;
 
-    const secret = process.env.RAZORPAY_KEY_SECRET || 'kjY2LgvU4jBogJfhmfJFZ0ok'; // Your real secret
+    const secret = process.env.RAZORPAY_KEY_SECRET || 'kjY2LgvU4jBogJfhmfJFZ0ok'; 
     const hmac = crypto.createHmac('sha256', secret);
     hmac.update(razorpayOrderId + "|" + razorpayPaymentId);
     const generatedSignature = hmac.digest('hex');
@@ -161,17 +180,14 @@ app.post('/api/bookings', protect, async (req, res) => {
       return res.status(400).json({ message: "Payment verification failed." });
     }
 
-    // Lookup the item from the database
     const item = await Item.findById(itemId);
-    
     const overlapping = await Booking.countDocuments({ item: itemId, status: 'Confirmed', $or: [{ startDate: { $lte: new Date(endDate) }, endDate: { $gte: new Date(startDate) } }] });
     if (overlapping >= item.quantity) return res.status(400).json({ message: "Stock became unavailable." });
 
-    // THE FIX: Assign the seller directly from the database item!
     const newBooking = new Booking({ 
       item: itemId, 
       buyer: req.user, 
-      seller: item.user, // Guaranteed to be the correct Owner ID
+      seller: item.user, 
       totalPrice, 
       startDate, 
       endDate, 
@@ -183,28 +199,6 @@ app.post('/api/bookings', protect, async (req, res) => {
   } catch (err) { 
     console.error("Booking Error:", err);
     res.status(500).json({ message: "Booking failed" }); 
-  }
-});
-
-app.get('/api/bookings/my', protect, async (req, res) => {
-  const bookings = await Booking.find({ buyer: req.user }).populate('item');
-  res.json(bookings);
-});
-
-
-// --- OWNER DASHBOARD ROUTE ---
-app.get('/api/bookings/owner', protect, async (req, res) => {
-  try {
-    // Standard Mongoose query
-    const bookings = await Booking.find({ seller: req.user })
-      .populate('item', 'title imageUrls pricePerDay')
-      .populate('buyer', 'email _id') 
-      .sort({ createdAt: -1 }); 
-      
-    res.json(bookings);
-  } catch (err) { 
-    console.error("Owner Dashboard Error:", err);
-    res.status(500).json({ message: "Failed to fetch owner dashboard data" }); 
   }
 });
 
